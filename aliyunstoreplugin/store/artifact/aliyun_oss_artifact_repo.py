@@ -1,15 +1,18 @@
 import os
 import posixpath
-
 import oss2
+from six.moves import urllib
+
+# 阿里云相关依赖
 from alibabacloud_credentials.client import Client
+from oss2 import CredentialsProvider
+from oss2.credentials import Credentials
+
+# MLflow 依赖
 from mlflow.entities import FileInfo
 from mlflow.exceptions import MlflowException
 from mlflow.store.artifact.artifact_repo import ArtifactRepository
 from mlflow.utils.file_utils import relative_path_to_artifact_path
-from oss2 import CredentialsProvider
-from oss2.credentials import Credentials
-from six.moves import urllib
 
 
 class CredentialProviderWrapper(CredentialsProvider):
@@ -26,8 +29,18 @@ class CredentialProviderWrapper(CredentialsProvider):
 class AliyunOssArtifactRepository(ArtifactRepository):
     """Stores artifacts on Aliyun OSS."""
 
-    def __init__(self, artifact_uri, oss_bucket=None):
+    # ------------------------------------------------------------------------
+    # [兼容性修复] MLflow 3.0+ 在初始化 Repository 时会传入 experiment_id 和 run_id
+    # 必须修改 __init__ 接收这些参数，否则会报错。
+    # 建议加上 **kwargs 以防止未来 MLflow 增加参数导致再次不兼容。
+    # ------------------------------------------------------------------------
+    def __init__(self, artifact_uri, experiment_id=None, run_id=None, oss_bucket=None, **kwargs):
+        # 调用父类初始化
         super(AliyunOssArtifactRepository, self).__init__(artifact_uri)
+        
+        # 保存 experiment_id 和 run_id (虽然 OSS 上传逻辑可能暂时不用，但最好存下来)
+        self.experiment_id = experiment_id
+        self.run_id = run_id
 
         if oss_bucket is not None:
             self.oss_bucket = oss_bucket
@@ -35,9 +48,14 @@ class AliyunOssArtifactRepository(ArtifactRepository):
 
         self.auth = None
         self.oss_endpoint_url = os.environ.get("MLFLOW_OSS_ENDPOINT_URL")
-        assert self.oss_endpoint_url, "please set MLFLOW_OSS_ENDPOINT_URL"
+        
+        # 建议：使用异常替代 assert，对用户更友好
+        if not self.oss_endpoint_url:
+            raise MlflowException("Please set MLFLOW_OSS_ENDPOINT_URL environment variable.")
+
         oss_access_key_id = os.environ.get("MLFLOW_OSS_KEY_ID")
         oss_access_key_secret = os.environ.get("MLFLOW_OSS_KEY_SECRET")
+        
         if oss_access_key_id and oss_access_key_secret:
             self.auth = oss2.Auth(oss_access_key_id, oss_access_key_secret)
         else:
@@ -47,11 +65,15 @@ class AliyunOssArtifactRepository(ArtifactRepository):
                 self.auth = oss2.ProviderAuth(credentials_provider)
             except Exception:
                 pass
-        assert (
-            self.auth
-        ), "please set MLFLOW_OSS_KEY_ID and MLFLOW_OSS_KEY_SECRET environment variable, or you can refer https://pypi.org/project/alibabacloud-credentials for how to use the default credential provider"
+        
+        if not self.auth:
+            raise MlflowException(
+                "Please set MLFLOW_OSS_KEY_ID and MLFLOW_OSS_KEY_SECRET environment variable, "
+                "or refer to alibabacloud-credentials for default provider configuration."
+            )
 
         self.oss_bucket = None
+        # is_plugin 标记在旧版中有用，保留以防万一
         self.is_plugin = True
 
     @staticmethod
@@ -68,6 +90,7 @@ class AliyunOssArtifactRepository(ArtifactRepository):
     def _get_oss_bucket(self, bucket):
         if self.oss_bucket is not None:
             return self.oss_bucket
+        # 注意：oss2.Bucket 初始化非常快（只是个客户端对象），不涉及网络请求
         self.oss_bucket = oss2.Bucket(self.auth, self.oss_endpoint_url, bucket)
         return self.oss_bucket
 
@@ -104,6 +127,8 @@ class AliyunOssArtifactRepository(ArtifactRepository):
         infos = []
         prefix = dest_path + "/" if dest_path else ""
         self._get_oss_bucket(bucket)
+        
+        # 注意：如果文件特别多，这里可能需要处理分页 (IsTruncated)，原版插件似乎没处理分页
         results = self.oss_bucket.list_objects(prefix=prefix, delimiter="/")
 
         for obj in results.object_list:
@@ -145,4 +170,6 @@ class AliyunOssArtifactRepository(ArtifactRepository):
         self.oss_bucket.get_object_to_file(oss_full_path, local_path)
 
     def delete_artifacts(self, artifact_path=None):
-        raise MlflowException("Not implemented yet")
+        # MLflow 3.0 的 GC 机制可能会调用此方法，如果不实现，删除 Run 时可能无法清理 OSS 文件
+        # 如果暂时不实现，保留 raise 也可以，只是后台会报错
+        raise MlflowException("Delete artifacts not implemented yet for Aliyun OSS")

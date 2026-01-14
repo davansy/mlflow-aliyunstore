@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='aliyunstoreplugin',
-    version='1.1.0',
+    version='1.1.2',
     description='Plugin that provides Aliyun oss Artifact Store functionality for MLflow',
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -14,7 +14,7 @@ setup(
     url="https://github.com/SeaOfOcean/mlflow-aliyunstore",
     packages=find_packages(),
     install_requires=[
-        'mlflow',
+        'mlflow>=2.0',
         'alibabacloud_credentials',
         'oss2'
     ],
